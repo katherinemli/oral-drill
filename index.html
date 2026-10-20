@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#2563eb">
+<title>Oral Drill</title>
+<!--
+  Simulations d'expression orale sur l'iPhone : TCF Canada (3 tâches) et
+  CELPIP Speaking (8 tâches). Le code est public ; les sujets arrivent dans
+  datos.enc, chiffré (AES-GCM). La clé vient du QR de mon tableau de bord
+  et ne quitte jamais le téléphone. Les enregistrements restent sur le
+  téléphone : bouton « Enregistrer » → Fichiers ou Drive.
+-->
+<style>
+  :root{--fond:#f6f7f9;--carte:#fff;--texte:#0f172a;--gris:#64748b;--bord:#e2e8f0;
+    --bleu:#2563eb;--rouge:#dc2626;--vert:#16a34a;--vio:#594a9d}
+  @media (prefers-color-scheme:dark){:root{--fond:#0b1120;--carte:#111827;--texte:#e5e7eb;--gris:#94a3b8;--bord:#1f2937}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--fond);color:var(--texte);font:16px/1.5 -apple-system,system-ui,sans-serif;
+    padding:max(16px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom))}
+  .wrap{max-width:640px;margin:0 auto}
+  h1{font-size:24px;margin:8px 0 4px} h2{font-size:18px;margin:0 0 6px}
+  .carte{background:var(--carte);border:1px solid var(--bord);border-radius:16px;padding:18px;margin:14px 0}
+  .muet{color:var(--gris);font-size:14px}
+  button,.btn{display:block;width:100%;border:0;border-radius:12px;padding:15px;font:600 17px/1.2 inherit;
+    background:var(--bleu);color:#fff;margin-top:12px;text-align:center;text-decoration:none}
+  button.sec{background:transparent;color:var(--bleu);border:1px solid var(--bord)}
+  button.cp{background:var(--vio)}
+  input,select{width:100%;font-size:17px;padding:12px;border-radius:10px;border:1px solid var(--bord);
+    background:var(--carte);color:var(--texte);margin-top:8px}
+  .etape{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--gris)}
+  .sujet{font-size:17px;white-space:pre-line}
+  .chrono{font-size:56px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;margin:10px 0 0}
+  .chrono.prep{color:var(--gris)} .chrono.rec{color:var(--rouge)}
+  .barre{height:6px;background:var(--bord);border-radius:9px;overflow:hidden}
+  .barre span{display:block;height:100%;background:var(--bleu);width:100%}
+  img{max-width:100%;border-radius:10px;margin-top:10px}
+  .opts{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .opt{border:2px solid var(--bord);border-radius:12px;padding:8px;font-size:13px}
+  .opt.choisie{border-color:var(--bleu)}
+  .opt ul{padding-left:16px;margin:6px 0 0}
+  audio{width:100%;margin-top:10px}
+  .cache{display:none}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><p class="muet">Chargement…</p></div>
+<script>
+(function(){
+"use strict";
+const app = document.getElementById("app");
+const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const mmss = s => Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const lire = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch(e){ return d; } };
+const ecrire = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} };
+let B = null;   // la banque déchiffrée
+
+// ---------- Déchiffrer ----------
+// La clé arrive une seule fois par le QR du tableau de bord (#k=…, partie de
+// l'adresse que Safari n'envoie jamais au serveur) ; ensuite elle vit ici.
+const brut = k => b64(k.replace(/-/g, "+").replace(/_/g, "/") + "==".slice(0, (4 - k.length % 4) % 4));
+async function ouvrir(){
+  const m = location.hash.match(/k=([\w-]{40,})/);
+  if (m){ ecrire("cle", m[1]); history.replaceState(null, "", location.pathname); }
+  const k = lire("cle", null);
+  if (!k) throw new Error("cle");
+  const f = await (await fetch("datos.enc")).json();
+  const ck = await crypto.subtle.importKey("raw", brut(k), "AES-GCM", false, ["decrypt"]);
+  const clair = await crypto.subtle.decrypt({name:"AES-GCM", iv:b64(f.iv)}, ck, b64(f.data));
+  B = JSON.parse(new TextDecoder().decode(clair));
+}
+function sansCle(){
+  app.innerHTML = '<h1>Oral Drill</h1><div class="carte"><h2>🔒 Page verrouillée</h2>'
+    + '<p class="muet">Scanne le QR de ton tableau de bord (localhost:8777/drill.html) avec l\'appareil photo.</p></div>';
+}
+
+// ---------- Son et micro ----------
+let actx = null;
+function bip(n = 1, long = false){
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    for (let i = 0; i < n; i++){
+      const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime + i * 0.25;
+      o.frequency.value = 880; g.gain.value = 0.15; o.connect(g); g.connect(actx.destination);
+      o.start(t); o.stop(t + (long ? 0.8 : 0.15));
+    }
+  } catch(e){}
+}
+let flux = null;
+async function micro(){
+  if (!flux) flux = await navigator.mediaDevices.getUserMedia({audio:true});
+  return flux;
+}
+function enregistreur(s){
+  const type = ["audio/mp4", "audio/webm"].find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+  const r = new MediaRecorder(s, type ? {mimeType:type} : {}), bouts = [];
+  r.ondataavailable = e => e.data.size && bouts.push(e.data);
+  const fini = new Promise(res => r.onstop = () => res(new Blob(bouts, {type: r.mimeType || type})));
+  r.start(1000);
+  return {stop: () => { if (r.state !== "inactive") r.stop(); return fini; }};
+}
+
+// ---------- Une phase chronométrée ----------
+// Affiche le compte à rebours ; « Passer » termine la phase plus tôt.
+function phase(el, secondes, classe){
+  return new Promise(res => {
+    const fin = Date.now() + secondes * 1000, c = el.querySelector(".chrono"), b = el.querySelector(".barre span");
+    c.className = "chrono " + classe;
+    b.style.transition = "none"; b.style.width = "100%"; void b.offsetWidth;
+    b.style.transition = "width " + secondes + "s linear"; b.style.width = "0";
+    let fait = false;
+    const finir = () => { if (fait) return; fait = true; clearInterval(t); res(); };
+    const tic = () => { const r = Math.max(0, Math.ceil((fin - Date.now()) / 1000));
+      c.textContent = mmss(r); if (r === 30 && classe === "rec") bip(2); if (!r) finir(); };
+    const t = setInterval(tic, 250); tic();
+    el.querySelector(".passer").onclick = finir;
+  });
+}
+
+// ---------- Une tâche : (préparation) → enregistrement → réécoute ----------
+async function tache(o){
+  // o = {etape, titre, html (le sujet), prep, rec, nom (du fichier)}
+  app.innerHTML = '<div class="etape">' + esc(o.etape) + "</div><h1>" + esc(o.titre) + "</h1>"
+    + '<div class="carte"><div class="sujet">' + o.html + "</div></div>"
+    + '<div class="carte"><div class="muet" id="quoi"></div><div class="chrono">—</div>'
+    + '<div class="barre"><span></span></div><button class="sec passer">Passer →</button></div>';
+  const el = app, quoi = el.querySelector("#quoi");
+  let s;
+  try { s = await micro(); } catch(e){ alert("Autorise le micro pour cette page (Réglages → Safari → Micro)."); throw e; }
+  if (o.prep){ quoi.textContent = "Préparation"; await phase(el, o.prep, "prep"); }
+  quoi.textContent = "🔴 Je parle"; bip(2);
+  const r = enregistreur(s);
+  await phase(el, o.rec, "rec");
+  const blob = await r.stop(); bip(1, true);
+  const url = URL.createObjectURL(blob), ext = /mp4/.test(blob.type) ? "m4a" : "webm";
+  const nom = o.nom + "." + ext;
+  return new Promise(res => {
+    const z = el.querySelectorAll(".carte")[1];
+    z.innerHTML = '<div class="muet">✓ Enregistré · ' + esc(nom) + '</div><audio controls src="' + url + '"></audio>'
+      + '<button id="garder">💾 Enregistrer le fichier</button><button class="sec" id="refaire">↺ Refaire</button>'
+      + '<button class="sec" id="suite">Suivant →</button>';
+    z.querySelector("#garder").onclick = async () => {
+      const f = new File([blob], nom, {type: blob.type});
+      if (navigator.canShare && navigator.canShare({files:[f]})) { try { await navigator.share({files:[f]}); } catch(e){} }
+      else { const a = document.createElement("a"); a.href = url; a.download = nom; a.click(); }
+    };
+    z.querySelector("#refaire").onclick = () => res("refaire");
+    z.querySelector("#suite").onclick = () => res("suite");
+  });
+}
+async function serie(taches, fin){
+  for (let i = 0; i < taches.length; i++){
+    while (await tache(taches[i]) === "refaire");
+  }
+  fin();
+}
+const horodatage = () => { const d = new Date(), p = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "_" + p(d.getHours()) + "h" + p(d.getMinutes()); };
+
+// ---------- TCF : 3 tâches, sujets jamais répétés tant qu'il en reste ----------
+function tirer(liste, cleVus){
+  let vus = lire(cleVus, []);
+  let libres = liste.map((_, i) => i).filter(i => !vus.includes(i));
+  if (!libres.length){ vus = []; libres = liste.map((_, i) => i); }
+  const i = libres[Math.floor(Math.random() * libres.length)];
+  ecrire(cleVus, vus.concat(i));
+  return liste[i];
+}
+function tcf(){
+  const h = horodatage(), t2 = tirer(B.tcf.t2, "vus.t2"), t3 = tirer(B.tcf.t3, "vus.t3");
+  serie([
+    {etape:"TCF · Tâche 1 · 2 min", titre:"Présentation", rec:120, nom:"tache-1_" + h,
+     html:"Présentez-vous : vie personnelle, études, travail, loisirs et projets."},
+    {etape:"TCF · Tâche 2 · 2 min + 3 min 30", titre:"Interaction", prep:120, rec:210, nom:"tache-2_" + h, html:esc(t2)},
+    {etape:"TCF · Tâche 3 · 4 min 30", titre:"Point de vue", rec:270, nom:"tache-3_" + h, html:esc(t3)},
+  ], () => fini("TCF"));
+}
+
+// ---------- CELPIP : un test = 8 tâches ----------
+async function choisir(k){
+  // Tâche 5, 1re partie : on choisit une option (sans parler).
+  return new Promise(async res => {
+    let choix = k.options[0];
+    app.innerHTML = '<div class="etape">CELPIP · Task 5 · choose</div><h1>' + esc(k.name) + "</h1>"
+      + '<div class="carte"><div class="sujet">' + esc(k.choosePrompt) + '</div><div class="opts">'
+      + k.options.map((x, i) => '<div class="opt' + (i ? "" : " choisie") + '" data-i="' + i + '"><b>' + esc(x.key + ". " + x.title)
+        + '</b><img src="' + x.img + '"><ul>' + x.bullets.map(b => "<li>" + esc(b) + "</li>").join("") + "</ul></div>").join("")
+      + '</div></div><div class="carte"><div class="chrono">—</div><div class="barre"><span></span></div>'
+      + '<button class="sec passer">Done →</button></div>';
+    app.querySelectorAll(".opt").forEach(d => d.onclick = () => {
+      app.querySelectorAll(".opt").forEach(x => x.classList.remove("choisie"));
+      d.classList.add("choisie"); choix = k.options[+d.dataset.i];
+    });
+    await phase(app, k.choose || 60, "prep");
+    res(choix);
+  });
+}
+function celpipMenu(){
+  const faits = lire("celpip.faits", []);
+  app.innerHTML = '<h1>CELPIP Speaking</h1><div class="carte"><select id="t">'
+    + B.celpip.map((t, i) => '<option value="' + i + '">' + (faits.includes(i) ? "✓ " : "") + esc(t.title) + "</option>").join("")
+    + '</select><button class="cp" id="go">Start</button><button class="sec" id="ret">← Menu</button></div>';
+  const prochain = B.celpip.findIndex((_, i) => !faits.includes(i));
+  if (prochain >= 0) app.querySelector("#t").value = prochain;
+  app.querySelector("#ret").onclick = menu;
+  app.querySelector("#go").onclick = () => celpip(+app.querySelector("#t").value);
+}
+async function celpip(n){
+  const t = B.celpip[n], h = horodatage();
+  try { await micro(); } catch(e){ alert("Autorise le micro pour cette page (Réglages → Safari → Micro)."); return; }
+  for (const k of t.tasks){
+    let html = esc(k.prompt);
+    if (k.image) html += '<img src="' + k.image + '">';
+    if (k.options){
+      const c = await choisir(k);
+      html = esc(k.prompt) + '<div class="opts" style="margin-top:10px">' + [c, k.rival].map((x, i) =>
+        '<div class="opt"><b>' + esc(i ? k.rivalLabel || "Their choice" : "Your choice") + " · " + esc(x.title) + '</b><img src="' + x.img
+        + '"><ul>' + x.bullets.map(b => "<li>" + esc(b) + "</li>").join("") + "</ul></div>").join("") + "</div>";
+    }
+    if (k.branches) html += "<ul>" + k.branches.map(b => "<li>" + esc(b) + "</li>").join("") + "</ul>"
+      + '<p class="muet">Choose ONE option.</p>';
+    while (await tache({etape:"CELPIP · Task " + k.n + " · " + k.prep + "s + " + k.rec + "s", titre:k.name,
+      html, prep:k.prep, rec:k.rec, nom:"celpip-" + (n + 1) + "_task-" + k.n + "_" + h}) === "refaire");
+  }
+  const faits = lire("celpip.faits", []);
+  if (!faits.includes(n)) ecrire("celpip.faits", faits.concat(n));
+  fini("CELPIP");
+}
+
+function fini(quoi){
+  app.innerHTML = '<h1>✓ ' + esc(quoi) + ' terminé</h1><div class="carte"><p>Bravo 💪</p>'
+    + '<p class="muet">N\'oublie pas d\'enregistrer tes fichiers (💾) si tu veux une évaluation.</p>'
+    + '<button id="m">Menu</button></div>';
+  app.querySelector("#m").onclick = menu;
+}
+function menu(){
+  app.innerHTML = '<h1>Oral Drill</h1><p class="muet">Sujets du ' + esc(B.cree) + "</p>"
+    + '<div class="carte"><h2>🇫🇷 TCF Canada — Expression orale</h2><p class="muet">3 tâches · ~12 min · sujets jamais répétés</p>'
+    + '<button id="tcf">Commencer</button></div>'
+    + '<div class="carte"><h2>🇨🇦 CELPIP — Speaking</h2><p class="muet">8 tasks · ~20 min · ' + B.celpip.length + " tests</p>"
+    + '<button class="cp" id="cp">Choose a test</button></div>';
+  app.querySelector("#tcf").onclick = tcf;
+  app.querySelector("#cp").onclick = celpipMenu;
+}
+
+ouvrir().then(menu).catch(sansCle);
+})();
+</script>
+</body>
+</html>
